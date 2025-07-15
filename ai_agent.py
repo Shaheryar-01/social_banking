@@ -240,7 +240,7 @@ class BankingAIAgent:
             - bank_statements: { "_id": ObjectId, "account_number": string, "date": ISODate, "type": string ("debit"/"credit"), "description": string, "Category": string (e.g., Food, Entertainment), "amount_usd": number, "amount_pkr": number, "balance_usd": number, "balance_pkr": number }
 
             Guidelines:
-            - For balance_inquiry, query the users collection or latest bank_statements document. Set pipeline to [].
+            - For current balance_inquiry, query the users collection or latest bank_statements document. Set pipeline to [].
             - For transaction_history, use $match, $sort, and optional $limit in the pipeline.
             - For spending_analysis, use $match and $group to aggregate spending by category, vendor, or date range.
             - For category_spending, use $match and $group for category aggregation.
@@ -730,7 +730,8 @@ class BankingAIAgent:
     async def _handle_general_query(self, user_message: str, first_name: str) -> str:
         """Handle general or unrecognized queries."""
         help_message = f"""
-        Hello {first_name}, I can assist with the following:
+        Sorry, I couldn't understand your query. Could you please clarify? 
+        I can assist with the following types of questions:
         - Check your balance: "What is my balance?"
         - View transactions: "Show my last 15 transactions"
         - Analyze spending: "How much did I spend on Netflix in June?"
