@@ -63,20 +63,26 @@ def process_dict_dates(obj):
         processed = {}
         for k, v in obj.items():
             if isinstance(v, dict):
-                # Handle ISODate objects
                 if "$date" in v:
                     try:
                         processed[k] = datetime.fromisoformat(v["$date"].replace("Z", "+00:00"))
-                    except:
-                        processed[k] = v
+                    except ValueError as e:
+                        logger.error({
+                            "action": "process_dict_dates",
+                            "error": f"Invalid date format: {v['$date']}"
+                        })
+                        processed[k] = v  # Keep original value to avoid breaking pipeline
                 elif "$gte" in v or "$lte" in v or "$lt" in v or "$gt" in v:
-                    # Handle date range queries
                     processed[k] = {}
                     for op, date_val in v.items():
                         if isinstance(date_val, dict) and "$date" in date_val:
                             try:
                                 processed[k][op] = datetime.fromisoformat(date_val["$date"].replace("Z", "+00:00"))
-                            except:
+                            except ValueError as e:
+                                logger.error({
+                                    "action": "process_dict_dates",
+                                    "error": f"Invalid date format: {date_val['$date']}"
+                                })
                                 processed[k][op] = date_val
                         else:
                             processed[k][op] = date_val
@@ -89,6 +95,7 @@ def process_dict_dates(obj):
         return processed
     else:
         return obj
+
 
 @router.post("/verify")
 def verify_user(data: VerifyRequest):

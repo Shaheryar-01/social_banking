@@ -46,7 +46,7 @@ PIPELINE_SCHEMA = {
 }
 
 class FilterExtraction(BaseModel):
-    vendor: Optional[str] = None
+    description: Optional[str] = None
     category: Optional[str] = None
     month: Optional[str] = None
     year: Optional[int] = None
@@ -61,6 +61,24 @@ class QueryResult(BaseModel):
     response_format: str = Field(default="natural_language")
     filters: Optional[FilterExtraction] = None
 
+def month_to_number(month: str) -> int:
+        """Convert month name to number."""
+        months = {
+            "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+            "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12
+        }
+        return months.get(month.lower(), 1)
+
+def month_days(month: str, year: int) -> int:
+    """Get number of days in a month."""
+    month_num = month_to_number(month)
+    if month_num in [4, 6, 9, 11]:
+        return 30
+    elif month_num == 2:
+        return 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28
+    else:
+        return 31
+        
 class BankingAIAgent:
     def __init__(self):
         self.backend_url = "http://localhost:8000"
@@ -77,8 +95,8 @@ class BankingAIAgent:
             - account_number (string)
             - date (ISODate)
             - type (string: "debit" or "credit")
-            - description (string: vendor/merchant name)
-            - Category (string: Food, Entertainment, Travel, Finance, Shopping, etc.)
+            - description (string: description/merchant name)
+            - category (string: Food, Entertainment, Travel, Finance, Shopping, etc.)
             - amount_usd (number)
             - amount_pkr (number)
             - balance_usd (number)
@@ -86,7 +104,7 @@ class BankingAIAgent:
             
             Extract the following filters from the user query and return as JSON:
             {{
-                "vendor": "vendor name if mentioned (e.g., Netflix, Uber, Amazon)",
+                "description": "description name if mentioned (e.g., Netflix, Uber, Amazon)",
                 "category": "category if mentioned (e.g., Food, Entertainment, Travel)",
                 "month": "month name if mentioned (e.g., january, june, december)",
                 "year": "year if mentioned (default to 2025 if not specified)",
@@ -98,7 +116,7 @@ class BankingAIAgent:
             
             Rules:
             - Only include fields that are explicitly mentioned or can be inferred
-            - For vendor names, extract the exact name mentioned (case-insensitive matching will be handled later)
+            - For description names, extract the exact name mentioned (case-insensitive matching will be handled later)
             - For months, use lowercase full names (january, february, etc.)
             - For spending queries, default transaction_type to "debit"
             - If "last X transactions" mentioned, set limit to X
@@ -109,7 +127,7 @@ class BankingAIAgent:
             
             Query: "how much did i spend on netflix in june"
             Response: {{
-                "vendor": "netflix",
+                "description": "netflix",
                 "category": null,
                 "month": "june",
                 "year": 2025,
@@ -121,7 +139,7 @@ class BankingAIAgent:
             
             Query: "show my last 10 transactions"
             Response: {{
-                "vendor": null,
+                "description": null,
                 "category": null,
                 "month": null,
                 "year": null,
@@ -133,7 +151,7 @@ class BankingAIAgent:
             
             Query: "how much did i spend on food last month"
             Response: {{
-                "vendor": null,
+                "description": null,
                 "category": "Food",
                 "month": "june",
                 "year": 2025,
@@ -145,7 +163,7 @@ class BankingAIAgent:
             
             Query: "transactions over 1000 USD in may"
             Response: {{
-                "vendor": null,
+                "description": null,
                 "category": null,
                 "month": "may",
                 "year": 2025,
@@ -165,61 +183,63 @@ class BankingAIAgent:
             input_variables=["filters", "intent", "account_number"],
             template="""
             Generate a MongoDB aggregation pipeline based on the extracted filters and intent.
-            
+
             Account Number: {account_number}
             Intent: {intent}
             Extracted Filters: {filters}
-            
+
             Generate a pipeline array with the following stages as needed:
             1. $match - for filtering documents
             2. $group - for aggregating data (spending analysis, category totals)
             3. $sort - for ordering results
             4. $limit - for limiting results
             5. $project - for selecting specific fields
-            
+
             Rules:
             - Always include account_number in $match
-            - For vendor matching, use $regex with case-insensitive option
-            - For date filtering, convert month/year to ISODate range
+            - For description matching, use $regex with case-insensitive option
+            - For date filtering, convert month/year to ISODate range in the format {{"$date": "YYYY-MM-DDTHH:mm:ssZ"}}
             - For spending analysis, group by null and sum amounts
             - For transaction history, sort by date descending and _id descending
-            - Use proper MongoDB syntax with ISODate objects
-            
+            - Ensure all ISODate values are valid and properly formatted (e.g., {{"$date": "2025-06-01T00:00:00Z"}})
+            - Do not use incomplete or invalid syntax like "ISODate" or partial date strings
+            - Use the provided month-to-date mapping for accurate date ranges
+
             Month to date range mapping (assuming year 2025):
-            - january: 2025-01-01 to 2025-01-31
-            - february: 2025-02-01 to 2025-02-28
-            - march: 2025-03-01 to 2025-03-31
-            - april: 2025-04-01 to 2025-04-30
-            - may: 2025-05-01 to 2025-05-31
-            - june: 2025-06-01 to 2025-06-30
-            - july: 2025-07-01 to 2025-07-31
-            - august: 2025-08-01 to 2025-08-31
-            - september: 2025-09-01 to 2025-09-30
-            - october: 2025-10-01 to 2025-10-31
-            - november: 2025-11-01 to 2025-11-30
-            - december: 2025-12-01 to 2025-12-31
-            
+            - january: {{"$date": "2025-01-01T00:00:00Z"}} to {{"$date": "2025-01-31T23:59:59Z"}}
+            - february: {{"$date": "2025-02-01T00:00:00Z"}} to {{"$date": "2025-02-28T23:59:59Z"}}
+            - march: {{"$date": "2025-03-01T00:00:00Z"}} to {{"$date": "2025-03-31T23:59:59Z"}}
+            - april: {{"$date": "2025-04-01T00:00:00Z"}} to {{"$date": "2025-04-30T23:59:59Z"}}
+            - may: {{"$date": "2025-05-01T00:00:00Z"}} to {{"$date": "2025-05-31T23:59:59Z"}}
+            - june: {{"$date": "2025-06-01T00:00:00Z"}} to {{"$date": "2025-06-30T23:59:59Z"}}
+            - july: {{"$date": "2025-07-01T00:00:00Z"}} to {{"$date": "2025-07-31T23:59:59Z"}}
+            - august: {{"$date": "2025-08-01T00:00:00Z"}} to {{"$date": "2025-08-31T23:59:59Z"}}
+            - september: {{"$date": "2025-09-01T00:00:00Z"}} to {{"$date": "2025-09-30T23:59:59Z"}}
+            - october: {{"$date": "2025-10-01T00:00:00Z"}} to {{"$date": "2025-10-31T23:59:59Z"}}
+            - november: {{"$date": "2025-11-01T00:00:00Z"}} to {{"$date": "2025-11-30T23:59:59Z"}}
+            - december: {{"$date": "2025-12-01T00:00:00Z"}} to {{"$date": "2025-12-31T23:59:59Z"}}
+
             Examples:
-            
-            Intent: spending_analysis, Filters: {{"vendor": "netflix", "month": "june", "year": 2025, "transaction_type": "debit"}}
+
+            Intent: spending_analysis, Filters: {{"description": "netflix", "month": "june", "year": 2025, "transaction_type": "debit"}}
             Pipeline: [
                 {{"$match": {{"account_number": "{account_number}", "type": "debit", "description": {{"$regex": "netflix", "$options": "i"}}, "date": {{"$gte": {{"$date": "2025-06-01T00:00:00Z"}}, "$lte": {{"$date": "2025-06-30T23:59:59Z"}}}}}}}},
                 {{"$group": {{"_id": null, "total_usd": {{"$sum": "$amount_usd"}}, "total_pkr": {{"$sum": "$amount_pkr"}}}}}}
             ]
-            
+
             Intent: transaction_history, Filters: {{"limit": 10}}
             Pipeline: [
                 {{"$match": {{"account_number": "{account_number}"}}}},
                 {{"$sort": {{"date": -1, "_id": -1}}}},
                 {{"$limit": 10}}
             ]
-            
+
             Intent: category_spending, Filters: {{"category": "Food", "month": "june", "year": 2025, "transaction_type": "debit"}}
             Pipeline: [
-                {{"$match": {{"account_number": "{account_number}", "type": "debit", "Category": "Food", "date": {{"$gte": {{"$date": "2025-06-01T00:00:00Z"}}, "$lte": {{"$date": "2025-06-30T23:59:59Z"}}}}}}}},
+                {{"$match": {{"account_number": "{account_number}", "type": "debit", "category": "Food", "date": {{"$gte": {{"$date": "2025-06-01T00:00:00Z"}}, "$lte": {{"$date": "2025-06-30T23:59:59Z"}}}}}}}},
                 {{"$group": {{"_id": null, "total_usd": {{"$sum": "$amount_usd"}}, "total_pkr": {{"$sum": "$amount_pkr"}}}}}}
             ]
-            
+
             Return only the JSON array pipeline.
             """
         )
@@ -237,12 +257,47 @@ class BankingAIAgent:
 
             MongoDB collections:
             - users: { "_id": ObjectId, "user_id": string, "first_name": string, "last_name": string, "dob": string, "mother_name": string, "place_of_birth": string, "account_number": string, "current_balance_usd": number, "current_balance_pkr": number }
-            - bank_statements: { "_id": ObjectId, "account_number": string, "date": ISODate, "type": string ("debit"/"credit"), "description": string, "Category": string (e.g., Food, Entertainment), "amount_usd": number, "amount_pkr": number, "balance_usd": number, "balance_pkr": number }
+
+            Example document in users document:
+            {
+            "_id": {
+                "$oid": "6874e7bcdfb730a4127a09d1"
+            },
+            "user_id": "u005",
+            "first_name": "Hamza",
+            "last_name": "Sheikh",
+            "dob": "1993-10-07",
+            "mother_name": "Nuzhat",
+            "place_of_birth": "Islamabad",
+            "account_number": "1005",
+            "current_balance_usd": 167952.5,
+            "current_balance_pkr": 179325.41
+            }
+
+            - bank_statements: { "_id": ObjectId, "account_number": string, "date": ISODate, "type": string ("debit"/"credit"), "description": string, "category": string (e.g., Food, Entertainment), "amount_usd": number, "amount_pkr": number, "balance_usd": number, "balance_pkr": number }
+
+            Example document in bank_statements collection:
+            {
+            "_id": {
+                "$oid": "6874e7bcdfb730a4127a09d8"
+            },
+            "account_number": "1001",
+            "date": {
+                "$date": "2025-06-01T00:00:00.000Z"
+            },
+            "type": "debit",
+            "description": "Grocery Store",
+            "category": "Groceries",
+            "amount_usd": 8468.68,
+            "amount_pkr": 0,
+            "balance_usd": 37747.04,
+            "balance_pkr": 24519.44
+            }
 
             Guidelines:
             - For current balance_inquiry, query the users collection or latest bank_statements document. Set pipeline to [].
             - For transaction_history, use $match, $sort, and optional $limit in the pipeline.
-            - For spending_analysis, use $match and $group to aggregate spending by category, vendor, or date range.
+            - For spending_analysis, use $match and $group to aggregate spending by category, description, or date range.
             - For category_spending, use $match and $group for category aggregation.
             - For transfer_money, set pipeline to [] and handle via API.
             - Use ISODate for date filters (e.g., {{"$gte": ISODate("2025-06-01T00:00:00Z")}}).
@@ -267,7 +322,7 @@ class BankingAIAgent:
             Guidelines:
             - For balance_inquiry, report current balances in USD and PKR.
             - For transaction_history, list transactions with date, description, category, and non-zero amount (USD or PKR).
-            - For spending_analysis, summarize total spending in USD and PKR, specifying the vendor or category if applicable.
+            - For spending_analysis, summarize total spending in USD and PKR, specifying the description or category if applicable.
             - For category_spending, list categories with amounts and percentages.
             - For transfer_money, confirm the transfer details or report errors.
             - For general, provide a helpful response explaining available queries.
@@ -320,7 +375,8 @@ class BankingAIAgent:
                 "error": str(e)
             })
             return FilterExtraction()
-
+        
+        
     def generate_pipeline_from_filters(self, filters: FilterExtraction, intent: str, account_number: str) -> List[Dict[str, Any]]:
         """Generate MongoDB pipeline from extracted filters using LLM."""
         try:
@@ -345,7 +401,14 @@ class BankingAIAgent:
             })
             
             try:
-                pipeline = json.loads(response.content)
+                # Clean up response to handle potential formatting issues
+                cleaned_response = response.content.strip()
+                # Replace any malformed ISODate strings
+                cleaned_response = re.sub(r'ISODate\("[^"]*"\)', lambda m: m.group(0).replace('ISODate', '{"$date":'), cleaned_response)
+                pipeline = json.loads(cleaned_response)
+                
+                # Validate pipeline structure
+                jsonschema.validate(pipeline, PIPELINE_SCHEMA)
                 logger.info({
                     "action": "pipeline_generated",
                     "pipeline": pipeline
@@ -357,8 +420,50 @@ class BankingAIAgent:
                     "error": str(e),
                     "raw_response": response.content
                 })
+                # Fallback: Construct a basic pipeline manually
+                if intent == "spending_analysis" and filters.month and filters.year:
+                    month_start = f"{filters.year}-{month_to_number(filters.month):02d}-01T00:00:00Z"
+                    month_end = f"{filters.year}-{month_to_number(filters.month):02d}-{month_days(filters.month, filters.year)}T23:59:59Z"
+                    match_stage = {
+                        "$match": {
+                            "account_number": account_number,
+                            "type": filters.transaction_type or "debit",
+                            "date": {
+                                "$gte": {"$date": month_start},
+                                "$lte": {"$date": month_end}
+                            }
+                        }
+                    }
+                    if filters.description:
+                        match_stage["$match"]["description"] = {"$regex": filters.description, "$options": "i"}
+                    if filters.category:
+                        match_stage["$match"]["category"] = filters.category
+                    
+                    pipeline = [
+                        match_stage,
+                        {
+                            "$group": {
+                                "_id": None,
+                                "total_usd": {"$sum": "$amount_usd"},
+                                "total_pkr": {"$sum": "$amount_pkr"}
+                            }
+                        }
+                    ]
+                    logger.info({
+                        "action": "fallback_pipeline_generated",
+                        "pipeline": pipeline
+                    })
+                    return pipeline
                 return []
-                
+                    
+            except jsonschema.ValidationError as e:
+                logger.error({
+                    "action": "pipeline_validation_error",
+                    "error": str(e),
+                    "pipeline": pipeline
+                })
+                return []
+                    
         except Exception as e:
             logger.error({
                 "action": "generate_pipeline_from_filters",
@@ -366,21 +471,163 @@ class BankingAIAgent:
             })
             return []
 
+
     def detect_intent_from_filters(self, user_message: str, filters: FilterExtraction) -> str:
-        """Detect intent based on user message and extracted filters."""
+        """Detect intent using LLM for more flexible understanding."""
+        try:
+            # Create intent classification prompt
+            intent_prompt = PromptTemplate(
+                input_variables=["user_message", "filters"],
+                template="""
+                You are a banking AI assistant. Analyze the user's query and classify it into one of these intents:
+
+                Available intents:
+                1. "balance_inquiry" - User wants to check their account balance
+                Examples: "What's my balance?", "How much money do I have?", "Check my account balance", "Show current balance"
+                
+                2. "transaction_history" - User wants to see their transaction history/list
+                Examples: "Show my transactions", "List my recent purchases", "What are my last 10 transactions?", "Transaction history"
+                
+                3. "spending_analysis" - User wants to analyze their spending on specific items/merchants
+                Examples: "How much did I spend on Netflix?", "What did I spend on Amazon last month?", "My Netflix expenses", "How much money went to Uber?"
+                
+                4. "category_spending" - User wants to analyze spending by category
+                Examples: "How much did I spend on food?", "My entertainment expenses", "Food spending last month", "How much on groceries?"
+                
+                5. "transfer_money" - User wants to transfer money to someone
+                Examples: "Transfer money to John", "Send $100 to Alice", "Pay my friend", "Transfer funds"
+                
+                6. "general" - General queries or unclear intent
+                Examples: "Hello", "Help me", "What can you do?", unclear requests
+
+                Classification rules:
+                - If user mentions checking balance, money amount, or account status → "balance_inquiry"
+                - If user asks for transaction list, history, or recent activities → "transaction_history"
+                - If user asks about spending on specific merchants/services (Netflix, Amazon, etc.) → "spending_analysis"
+                - If user asks about spending in categories (food, entertainment, etc.) → "category_spending"
+                - If user wants to send/transfer money → "transfer_money"
+                - If intent is unclear or general → "general"
+
+                Consider these extracted filters to help classification:
+                - If filters.limit is set → likely "transaction_history"
+                - If filters.description is set → likely "spending_analysis"
+                - If filters.category is set → likely "category_spending"
+                - If filters.transaction_type is "debit" and specific merchant → likely "spending_analysis"
+
+                User query: "{user_message}"
+                Extracted filters: {filters}
+
+                Respond with only the intent name (e.g., "balance_inquiry", "spending_analysis", etc.)
+                """
+            )
+            
+            logger.info({
+                "action": "llm_intent_classification",
+                "user_message": user_message,
+                "filters": filters.dict()
+            })
+            
+            # Call LLM for intent classification
+            response = llm.invoke([
+                SystemMessage(content=intent_prompt.format(
+                    user_message=user_message,
+                    filters=json.dumps(filters.dict())
+                ))
+            ])
+            
+            # Clean and validate response
+            detected_intent = response.content.strip().lower()
+            
+            # Valid intents
+            valid_intents = [
+                "balance_inquiry",
+                "transaction_history", 
+                "spending_analysis",
+                "category_spending",
+                "transfer_money",
+                "general"
+            ]
+            
+            # Check if returned intent is valid
+            if detected_intent in valid_intents:
+                logger.info({
+                    "action": "intent_detected",
+                    "intent": detected_intent,
+                    "user_message": user_message
+                })
+                return detected_intent
+            else:
+                # Fallback: try to match partial responses
+                for intent in valid_intents:
+                    if intent in detected_intent:
+                        logger.info({
+                            "action": "intent_detected_partial",
+                            "intent": intent,
+                            "raw_response": detected_intent,
+                            "user_message": user_message
+                        })
+                        return intent
+                
+                # If no match found, return general
+                logger.warning({
+                    "action": "intent_detection_failed",
+                    "raw_response": detected_intent,
+                    "user_message": user_message,
+                    "fallback_intent": "general"
+                })
+                return "general"
+                
+        except Exception as e:
+            logger.error({
+                "action": "llm_intent_classification",
+                "error": str(e),
+                "user_message": user_message
+            })
+            
+            # Fallback to rule-based approach if LLM fails
+            logger.info({
+                "action": "fallback_to_rule_based",
+                "user_message": user_message
+            })
+            return self._rule_based_intent_fallback(user_message, filters)
+
+    def _rule_based_intent_fallback(self, user_message: str, filters: FilterExtraction) -> str:
+        """Fallback rule-based intent detection with expanded keyword matching."""
         user_message_lower = user_message.lower()
         
-        if "balance" in user_message_lower:
+        # Balance inquiry keywords
+        balance_keywords = ["balance", "money", "amount", "funds", "account", "cash"]
+        
+        # Transaction history keywords  
+        transaction_keywords = ["transaction", "history", "recent", "last", "show", "list", "activities"]
+        
+        # Spending analysis keywords
+        spending_keywords = ["spend", "spent", "spending", "expenditure", "expense", "expenses", 
+                            "cost", "costs", "paid", "pay", "payment", "purchase", "purchased", 
+                            "buying", "bought", "money went", "charged"]
+        
+        # Transfer keywords
+        transfer_keywords = ["transfer", "send", "pay", "wire", "remit", "move money"]
+        
+        # Check for balance inquiry
+        if any(keyword in user_message_lower for keyword in balance_keywords):
             return "balance_inquiry"
-        elif "transaction" in user_message_lower or filters.limit:
+        
+        # Check for transaction history
+        elif any(keyword in user_message_lower for keyword in transaction_keywords) or filters.limit:
             return "transaction_history"
-        elif "spend" in user_message_lower or "spent" in user_message_lower:
+        
+        # Check for spending analysis
+        elif any(keyword in user_message_lower for keyword in spending_keywords):
             if filters.category:
                 return "category_spending"
             else:
                 return "spending_analysis"
-        elif "transfer" in user_message_lower:
+        
+        # Check for transfer
+        elif any(keyword in user_message_lower for keyword in transfer_keywords):
             return "transfer_money"
+        
         else:
             return "general"
 
@@ -735,7 +982,7 @@ class BankingAIAgent:
         - Check your balance: "What is my balance?"
         - View transactions: "Show my last 15 transactions"
         - Analyze spending: "How much did I spend on Netflix in June?"
-        - Category spending: "Where did I spend the most last month?"
+        - category spending: "Where did I spend the most last month?"
         - Transfer money: "Transfer 500 USD to John"
         Please specify your request for assistance.
         """
