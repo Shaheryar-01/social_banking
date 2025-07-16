@@ -24,9 +24,9 @@ load_dotenv()
 
 # Initialize LangChain LLM
 llm = ChatOpenAI(
-    model="gpt-4",
+    model="gpt-4o",
     api_key=os.getenv("OPENAI_API_KEY"),
-    temperature=0.1
+    temperature=0.2
 )
 
 # MongoDB pipeline schema for validation
@@ -95,8 +95,34 @@ class BankingAIAgent:
             - account_number (string)
             - date (ISODate)
             - type (string: "debit" or "credit")
-            - description (string: description/merchant name)
-            - category (string: Food, Entertainment, Travel, Finance, Shopping, etc.)
+            - description (string: Zong,
+                        Grocery Store,
+                        Careem,
+                        Foodpanda,
+                        Amazon,
+                        JazzCash,
+                        Utility Bill,
+                        McDonalds,
+                        Salary,
+                        Daraz,
+                        Netflix,
+                        ABC Corp,
+                        Recieved from X (replace X with name)
+                        )
+            - category (string: category
+                    Telecom,
+                    Groceries,
+                    Travel,
+                    Food,
+                    Shopping,
+                    Finance,
+                    Utilities,
+                    Income,
+                    Entertainment,
+                    Salary,
+                    Personal Transfer,
+                    )
+
             - amount_usd (number)
             - amount_pkr (number)
             - balance_usd (number)
@@ -122,7 +148,7 @@ class BankingAIAgent:
             - If "last X transactions" mentioned, set limit to X
             - If no year specified but month is mentioned, assume 2025
             - Return null for fields not mentioned
-            - The account supports multiple currencies: `amount_usd` and `amount_pkr` represent independent transaction amounts in USD and PKR, respectively, and are not converted versions of each other. Similarly, `balance_usd` and `balance_pkr` are separate balances maintained in each currency.
+            - The account supports multiple currencies: `amount_usd` and `amount_pkr` represent independent transaction amounts in USD and PKR, respectively, and are not converted versions of each other.     Similarly, `balance_usd` and `balance_pkr` are separate balances maintained in each currency.
             
             Examples:
             
@@ -181,72 +207,72 @@ class BankingAIAgent:
         
         # Prompt for generating MongoDB pipeline from extracted filters
         self.pipeline_generation_prompt = PromptTemplate(
-            input_variables=["filters", "intent", "account_number"],
-            template="""
-            Generate a MongoDB aggregation pipeline based on the extracted filters and intent.
+        input_variables=["filters", "intent", "account_number"],
+        template="""
+        Generate a MongoDB aggregation pipeline based on the extracted filters and intent.
 
-            IMPORTANT: Return ONLY the JSON array, no explanatory text, no markdown formatting.
+        IMPORTANT: Return ONLY the JSON array, no explanatory text, no markdown formatting.
 
-            Account Number: {account_number}
-            Intent: {intent}
-            Extracted Filters: {filters}
+        Account Number: {account_number}
+        Intent: {intent}
+        Extracted Filters: {filters}
 
-            Generate a pipeline array with the following stages as needed:
-            1. $match - for filtering documents
-            2. $group - for aggregating data (spending analysis, category totals)
-            3. $sort - for ordering results
-            4. $limit - for limiting results
-            5. $project - for selecting specific fields
+        Generate a pipeline array with the following stages as needed:
+        1. $match - for filtering documents
+        2. $group - for aggregating data (spending analysis, category totals)
+        3. $sort - for ordering results
+        4. $limit - for limiting results
+        5. $project - for selecting specific fields
 
-            Rules:
-            - Always include account_number in $match
-            - For description matching, use $regex with case-insensitive option
-            - For date filtering, convert month/year to ISODate range in the format {{"$date": "YYYY-MM-DDTHH:mm:ssZ"}}
-            - For spending analysis, group by null and sum amounts
-            - For transaction history, sort by date descending and _id descending
-            - Ensure all ISODate values are valid and properly formatted (e.g., {{"$date": "2025-06-01T00:00:00Z"}})
-            - Do not use incomplete or invalid syntax like "ISODate" or partial date strings
-            - Use the provided month-to-date mapping for accurate date ranges
-            - Treat `amount_usd` and `amount_pkr` as independent fields representing transactions in their respective currencies. Do not assume any conversion between USD and PKR values. Similarly, `balance_usd` and `balance_pkr` are separate and not derived from each other.
+        Rules:
+        - Always include account_number in $match
+        - For description and category matching, use $regex with case-insensitive option (e.g., {{"$regex": "value", "$options": "i"}})
+        - For date filtering, convert month/year to ISODate range in the format {{"$date": "YYYY-MM-DDTHH:mm:ssZ"}}
+        - For spending analysis or category_spending, group by null and sum amounts
+        - For transaction history, sort by date descending and _id descending
+        - Ensure all ISODate values are valid and properly formatted (e.g., {{"$date": "2025-06-01T00:00:00Z"}})
+        - Do not use incomplete or invalid syntax like "ISODate" or partial date strings
+        - For category_spending intent with a category filter, always use {{"$regex": "<category>", "$options": "i"}} for the category field to ensure case-insensitive matching
+        - Treat `amount_usd` and `amount_pkr` as independent fields representing transactions in their respective currencies
 
-            Month to date range mapping (assuming year 2025):
-            - january: {{"$date": "2025-01-01T00:00:00Z"}} to {{"$date": "2025-01-31T23:59:59Z"}}
-            - february: {{"$date": "2025-02-01T00:00:00Z"}} to {{"$date": "2025-02-28T23:59:59Z"}}
-            - march: {{"$date": "2025-03-01T00:00:00Z"}} to {{"$date": "2025-03-31T23:59:59Z"}}
-            - april: {{"$date": "2025-04-01T00:00:00Z"}} to {{"$date": "2025-04-30T23:59:59Z"}}
-            - may: {{"$date": "2025-05-01T00:00:00Z"}} to {{"$date": "2025-05-31T23:59:59Z"}}
-            - june: {{"$date": "2025-06-01T00:00:00Z"}} to {{"$date": "2025-06-30T23:59:59Z"}}
-            - july: {{"$date": "2025-07-01T00:00:00Z"}} to {{"$date": "2025-07-31T23:59:59Z"}}
-            - august: {{"$date": "2025-08-01T00:00:00Z"}} to {{"$date": "2025-08-31T23:59:59Z"}}
-            - september: {{"$date": "2025-09-01T00:00:00Z"}} to {{"$date": "2025-09-30T23:59:59Z"}}
-            - october: {{"$date": "2025-10-01T00:00:00Z"}} to {{"$date": "2025-10-31T23:59:59Z"}}
-            - november: {{"$date": "2025-11-01T00:00:00Z"}} to {{"$date": "2025-11-30T23:59:59Z"}}
-            - december: {{"$date": "2025-12-01T00:00:00Z"}} to {{"$date": "2025-12-31T23:59:59Z"}}
+        Month to date range mapping (assuming year 2025):
+        - january: {{"$date": "2025-01-01T00:00:00Z"}} to {{"$date": "2025-01-31T23:59:59Z"}}
+        - february: {{"$date": "2025-02-01T00:00:00Z"}} to {{"$date": "2025-02-28T23:59:59Z"}}
+        - march: {{"$date": "2025-03-01T00:00:00Z"}} to {{"$date": "2025-03-31T23:59:59Z"}}
+        - april: {{"$date": "2025-04-01T00:00:00Z"}} to {{"$date": "2025-04-30T23:59:59Z"}}
+        - may: {{"$date": "2025-05-01T00:00:00Z"}} to {{"$date": "2025-05-31T23:59:59Z"}}
+        - june: {{"$date": "2025-06-01T00:00:00Z"}} to {{"$date": "2025-06-30T23:59:59Z"}}
+        - july: {{"$date": "2025-07-01T00:00:00Z"}} to {{"$date": "2025-07-31T23:59:59Z"}}
+        - august: {{"$date": "2025-08-01T00:00:00Z"}} to {{"$date": "2025-08-31T23:59:59Z"}}
+        - september: {{"$date": "2025-09-01T00:00:00Z"}} to {{"$date": "2025-09-30T23:59:59Z"}}
+        - october: {{"$date": "2025-10-01T00:00:00Z"}} to {{"$date": "2025-10-31T23:59:59Z"}}
+        - november: {{"$date": "2025-11-01T00:00:00Z"}} to {{"$date": "2025-11-30T23:59:59Z"}}
+        - december: {{"$date": "2025-12-01T00:00:00Z"}} to {{"$date": "2025-12-31T23:59:59Z"}}
 
-            Examples:
+        Examples:
 
-            Intent: spending_analysis, Filters: {{"description": "netflix", "month": "june", "year": 2025, "transaction_type": "debit"}}
-            Pipeline: [
-                {{"$match": {{"account_number": "{account_number}", "type": "debit", "description": {{"$regex": "netflix", "$options": "i"}}, "date": {{"$gte": {{"$date": "2025-06-01T00:00:00Z"}}, "$lte": {{"$date": "2025-06-30T23:59:59Z"}}}}}}}},
-                {{"$group": {{"_id": null, "total_usd": {{"$sum": "$amount_usd"}}, "total_pkr": {{"$sum": "$amount_pkr"}}}}}}
-            ]
+        Intent: spending_analysis, Filters: {{"description": "netflix", "month": "june", "year": 2025, "transaction_type": "debit"}}
+        Pipeline: [
+            {{"$match": {{"account_number": "{account_number}", "type": "debit", "description": {{"$regex": "netflix", "$options": "i"}}, "date": {{"$gte": {{"$date": "2025-06-01T00:00:00Z"}}, "$lte": {{"$date": "2025-06-30T23:59:59Z"}}}}}}}},
+            {{"$group": {{"_id": null, "total_usd": {{"$sum": "$amount_usd"}}, "total_pkr": {{"$sum": "$amount_pkr"}}}}}}
+        ]
 
-            Intent: transaction_history, Filters: {{"limit": 10}}
-            Pipeline: [
-                {{"$match": {{"account_number": "{account_number}"}}}},
-                {{"$sort": {{"date": -1, "_id": -1}}}},
-                {{"$limit": 10}}
-            ]
+        Intent: transaction_history, Filters: {{"limit": 10}}
+        Pipeline: [
+            {{"$match": {{"account_number": "{account_number}"}}}},
+            {{"$sort": {{"date": -1, "_id": -1}}}},
+            {{"$limit": 10}}
+        ]
 
-            Intent: category_spending, Filters: {{"category": "Food", "month": "june", "year": 2025, "transaction_type": "debit"}}
-            Pipeline: [
-                {{"$match": {{"account_number": "{account_number}", "type": "debit", "category": "Food", "date": {{"$gte": {{"$date": "2025-06-01T00:00:00Z"}}, "$lte": {{"$date": "2025-06-30T23:59:59Z"}}}}}}}},
-                {{"$group": {{"_id": null, "total_usd": {{"$sum": "$amount_usd"}}, "total_pkr": {{"$sum": "$amount_pkr"}}}}}}
-            ]
+        Intent: category_spending, Filters: {{"category": "Telecom", "month": "june", "year": 2025, "transaction_type": "debit"}}
+        Pipeline: [
+            {{"$match": {{"account_number": "{account_number}", "type": "debit", "category": {{"$regex": "Telecom", "$options": "i"}}, "date": {{"$gte": {{"$date": "2025-06-01T00:00:00Z"}}, "$lte": {{"$date": "2025-06-30T23:59:59Z"}}}}}}}},
+            {{"$group": {{"_id": null, "total_usd": {{"$sum": "$amount_usd"}}, "total_pkr": {{"$sum": "$amount_pkr"}}}}}}
+        ]
 
-            Return only the JSON array pipeline.
-            """
-        )
+        Return only the JSON array pipeline.
+        """
+    )
 
         # Response formatting prompt
         self.response_prompt = PromptTemplate(
@@ -405,7 +431,7 @@ class BankingAIAgent:
             
             logger.info({
                 "action": "llm_pipeline_generation_response",
-                "response_content": response.content
+                "response_content": response.content[:1000]  # Log first 1000 chars for debugging
             })
             
             cleaned_response = self._extract_json_from_response(response.content)
@@ -413,13 +439,11 @@ class BankingAIAgent:
             if not cleaned_response:
                 logger.error({
                     "action": "pipeline_generation_no_json_found",
-                    "raw_response": response.content
+                    "raw_response": response.content[:1000]
                 })
                 return self._generate_fallback_pipeline(filters, intent, account_number)
             
             try:
-                # Replace any malformed ISODate strings
-                cleaned_response = re.sub(r'ISODate\("[^"]*"\)', lambda m: m.group(0).replace('ISODate', '{"$date":'), cleaned_response)
                 pipeline = json.loads(cleaned_response)
                 
                 # Validate pipeline structure
@@ -433,7 +457,7 @@ class BankingAIAgent:
                 logger.error({
                     "action": "pipeline_generation_parse_error",
                     "error": str(e),
-                    "cleaned_response": cleaned_response
+                    "cleaned_response": cleaned_response[:1000]
                 })
                 return self._generate_fallback_pipeline(filters, intent, account_number)
                 
@@ -441,7 +465,7 @@ class BankingAIAgent:
                 logger.error({
                     "action": "pipeline_validation_error",
                     "error": str(e),
-                    "pipeline": pipeline
+                    "cleaned_response": cleaned_response[:1000]
                 })
                 return self._generate_fallback_pipeline(filters, intent, account_number)
                     
@@ -453,35 +477,100 @@ class BankingAIAgent:
             return self._generate_fallback_pipeline(filters, intent, account_number)
 
     def _extract_json_from_response(self, response_content: str) -> str:
-        """Extract JSON from LLM response that might contain additional text."""
-        # Remove markdown code blocks
-        response_content = re.sub(r'```json\s*', '', response_content)
-        response_content = re.sub(r'```\s*', '', response_content)
-        
-        # Remove common prefixes
-        prefixes_to_remove = [
-            "Based on the provided intent and filters, the generated MongoDB aggregation pipeline is:",
-            "The MongoDB aggregation pipeline is:",
-            "Here is the pipeline:",
-            "Pipeline:",
-            "The generated pipeline is:",
-        ]
-        
-        for prefix in prefixes_to_remove:
-            if prefix in response_content:
-                response_content = response_content.split(prefix, 1)[1]
-        
-        # Try to find JSON array in the response
-        response_content = response_content.strip()
-        
-        # Look for JSON array pattern
-        json_match = re.search(r'(\[.*\])', response_content, re.DOTALL)
-        if json_match:
-            return json_match.group(1).strip()
-        
-        # If no array found, return the cleaned response
-        return response_content
+        """Extract valid JSON from LLM response, handling common issues and edge cases."""
+        logger.info({
+            "action": "extract_json_from_response_start",
+            "raw_response": response_content[:500]  # Log first 500 chars for brevity
+        })
 
+        # Step 1: Clean the response
+        cleaned_response = re.sub(r'```(?:json)?\s*', '', response_content, flags=re.IGNORECASE)
+        cleaned_response = re.sub(r'```\s*', '', cleaned_response)
+
+        prefixes_to_remove = [
+            r"Based on the provided intent and filters, the generated MongoDB aggregation pipeline is:",
+            r"The MongoDB aggregation pipeline is:",
+            r"Here is the pipeline:",
+            r"Pipeline:",
+            r"The generated pipeline is:",
+            r"Here is the JSON pipeline:",
+            r"JSON Response:",
+            r"Output:"
+        ]
+        for prefix in prefixes_to_remove:
+            cleaned_response = re.sub(prefix, '', cleaned_response, flags=re.IGNORECASE)
+
+        cleaned_response = cleaned_response.strip()
+
+        # Step 2: Extract JSON array or object
+        json_pattern = r'(\[\s*{.*?}\s*\]|\{.*?\})'
+        json_match = re.search(json_pattern, cleaned_response, re.DOTALL)
+
+        if not json_match:
+            logger.error({
+                "action": "extract_json_from_response_failed",
+                "error": "No valid JSON array or object found",
+                "cleaned_response": cleaned_response[:500]
+            })
+            return ""
+
+        extracted_json = json_match.group(1).strip()
+
+        # Step 3: Fix common JSON issues
+        try:
+            # Replace malformed ISODate strings
+            extracted_json = re.sub(
+                r'ISODate\("([^"]*)"\)',
+                r'{"$date": "\1"}',
+                extracted_json
+            )
+
+            # Fix trailing commas
+            extracted_json = re.sub(r',\s*(\]|\})', r'\1', extracted_json)
+
+            # Fix single quotes to double quotes
+            extracted_json = extracted_json.replace("'", '"')
+
+            # Fix malformed regex fields (e.g., "category": "Telecom" -> "category": {"$regex": "Telecom", "$options": "i"})
+            extracted_json = re.sub(
+                r'"category":\s*"([^"]+)"',
+                r'"category": {"$regex": "\1", "$options": "i"}',
+                extracted_json
+            )
+
+            # Step 4: Validate JSON
+            parsed_json = json.loads(extracted_json)
+
+            if not isinstance(parsed_json, list):
+                logger.error({
+                    "action": "extract_json_from_response_invalid_type",
+                    "error": "Extracted JSON is not an array",
+                    "extracted_json": extracted_json[:500]
+                })
+                return ""
+
+            logger.info({
+                "action": "extract_json_from_response_success",
+                "extracted_json": extracted_json[:500]
+            })
+            return extracted_json
+
+        except json.JSONDecodeError as e:
+            logger.error({
+                "action": "extract_json_from_response_parse_error",
+                "error": str(e),
+                "extracted_json": extracted_json[:500]
+            })
+            return ""
+
+        except Exception as e:
+            logger.error({
+                "action": "extract_json_from_response_unexpected_error",
+                "error": str(e),
+                "extracted_json": extracted_json[:500]
+            })
+            return ""
+    
     def _generate_fallback_pipeline(self, filters: FilterExtraction, intent: str, account_number: str) -> List[Dict[str, Any]]:
         """Generate a basic pipeline when LLM fails."""
         logger.info({
@@ -493,7 +582,7 @@ class BankingAIAgent:
         # Basic match stage
         match_stage = {"$match": {"account_number": account_number}}
         
-        # For transaction history with limit
+        # For transaction history
         if intent == "transaction_history":
             pipeline = [
                 match_stage,
@@ -503,8 +592,8 @@ class BankingAIAgent:
                 pipeline.append({"$limit": filters.limit})
             return pipeline
         
-        # For spending analysis
-        elif intent == "spending_analysis":
+        # For spending analysis or category spending
+        elif intent in ["spending_analysis", "category_spending"]:
             if filters.transaction_type:
                 match_stage["$match"]["type"] = filters.transaction_type
             
@@ -515,7 +604,10 @@ class BankingAIAgent:
                 }
             
             if filters.category:
-                match_stage["$match"]["category"] = filters.category
+                match_stage["$match"]["category"] = {
+                    "$regex": filters.category,
+                    "$options": "i"
+                }
             
             # Add date range if month/year specified
             if filters.month and filters.year:
@@ -968,7 +1060,7 @@ class BankingAIAgent:
                 template="""
                 Extract transfer details from the query:
                 - amount: number
-                - currency: "USD" or "PKR"
+                - currency: usd/USD = "USD" or pkr/PKR = "PKR" (even if user types currency in lower case always extract it in upper case)
                 - recipient: string
                 Return JSON: {{"amount": number, "currency": string, "recipient": string}}
                 

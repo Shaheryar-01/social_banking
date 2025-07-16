@@ -122,7 +122,7 @@ class BankingAIAgent:
             - If "last X transactions" mentioned, set limit to X
             - If no year specified but month is mentioned, assume 2025
             - Return null for fields not mentioned
-            - The account supports multiple currencies: `amount_usd` and `amount_pkr` represent independent transaction amounts in USD and PKR, respectively, and are not converted versions of each other. Similarly, `balance_usd` and `balance_pkr` are separate balances maintained in each currency.
+            - The account supports multiple currencies: `amount_usd` and `amount_pkr` represent independent transaction amounts in USD and PKR, respectively, and are not converted versions of each other.     Similarly, `balance_usd` and `balance_pkr` are separate balances maintained in each currency.
             
             Examples:
             
@@ -200,7 +200,7 @@ class BankingAIAgent:
 
             Rules:
             - Always include account_number in $match
-            - For description matching, use $regex with case-insensitive option
+            - For description and category matching, use $regex with case-insensitive option
             - For date filtering, convert month/year to ISODate range in the format {{"$date": "YYYY-MM-DDTHH:mm:ssZ"}}
             - For spending analysis, group by null and sum amounts
             - For transaction history, sort by date descending and _id descending
@@ -238,13 +238,49 @@ class BankingAIAgent:
                 {{"$limit": 10}}
             ]
 
-            Intent: category_spending, Filters: {{"category": "Food", "month": "june", "year": 2025, "transaction_type": "debit"}}
+            Intent: category_spending
+            Filters: {"category": "Food", "month": "june", "year": 2025, "transaction_type": "debit"}
             Pipeline: [
-                {{"$match": {{"account_number": "{account_number}", "type": "debit", "category": "Food", "date": {{"$gte": {{"$date": "2025-06-01T00:00:00Z"}}, "$lte": {{"$date": "2025-06-30T23:59:59Z"}}}}}}}},
-                {{"$group": {{"_id": null, "total_usd": {{"$sum": "$amount_usd"}}, "total_pkr": {{"$sum": "$amount_pkr"}}}}}}
+            {
+                "$match": {
+                "account_number": "{account_number}",
+                "type": "debit",
+                "category": { "$regex": "Food", "$options": "i" },  
+                "date": {
+                    "$gte": { "$date": "2025-06-01T00:00:00Z" },
+                    "$lte": { "$date": "2025-06-30T23:59:59Z" }
+                }
+                }
+            },
+            { "$group": { "_id": null, "total_usd": { "$sum": "$amount_usd" }, "total_pkr": { "$sum": "$amount_pkr" } } }
             ]
 
             Return only the JSON array pipeline.
+            """
+        )
+
+        # Response formatting prompt
+        self.response_prompt = PromptTemplate(
+            input_variables=["user_message", "data", "intent"],
+            template="""
+            You are a banking AI assistant. Format the API response data into a natural language answer to the user's query. Be concise, professional, and avoid emojis or informal language.
+
+            User query: {user_message}
+            Intent: {intent}
+            API response data: {data}
+
+            Guidelines:
+            - For balance_inquiry, report current balances in USD and PKR.
+            - For transaction_history, list transactions with date, description, category, and non-zero amount (USD or PKR).
+            - For spending_analysis, summarize total spending in USD and PKR, specifying the description or category if applicable.
+            - For category_spending, list categories with amounts and percentages.
+            - For transfer_money, confirm the transfer details or report errors.
+            - For general, provide a helpful response explaining available queries.
+            - If the data indicates an error (e.g., {{"status": "fail"}}), return a user-friendly error message.
+            - For spending_analysis, if total_usd or total_pkr is zero, omit that currency from the response unless both are zero.
+            - When reporting amounts or balances, treat USD and PKR values as independent. Report both `amount_usd` and `amount_pkr` (or `balance_usd` and `balance_pkr`) when non-zero, and clarify that these are separate currency accounts, not conversions.
+
+            Format the response for the query and data provided.
             """
         )
 
@@ -314,30 +350,6 @@ class BankingAIAgent:
             """
         )
 
-        # Response formatting prompt
-        self.response_prompt = PromptTemplate(
-            input_variables=["user_message", "data", "intent"],
-            template="""
-            You are a banking AI assistant. Format the API response data into a natural language answer to the user's query. Be concise, professional, and avoid emojis or informal language.
-
-            User query: {user_message}
-            Intent: {intent}
-            API response data: {data}
-
-            Guidelines:
-            - For balance_inquiry, report current balances in USD and PKR.
-            - For transaction_history, list transactions with date, description, category, and non-zero amount (USD or PKR).
-            - For spending_analysis, summarize total spending in USD and PKR, specifying the description or category if applicable.
-            - For category_spending, list categories with amounts and percentages.
-            - For transfer_money, confirm the transfer details or report errors.
-            - For general, provide a helpful response explaining available queries.
-            - If the data indicates an error (e.g., {{"status": "fail"}}), return a user-friendly error message.
-            - For spending_analysis, if total_usd or total_pkr is zero, omit that currency from the response unless both are zero.
-            - When reporting amounts or balances, treat USD and PKR values as independent. Report both `amount_usd` and `amount_pkr` (or `balance_usd` and `balance_pkr`) when non-zero, and clarify that these are separate currency accounts, not conversions.
-
-            Format the response for the query and data provided.
-            """
-        )
 
     def extract_filters_with_llm(self, user_message: str) -> FilterExtraction:
         """Use LLM to extract filters from user query."""
@@ -367,6 +379,7 @@ class BankingAIAgent:
                     "filters": filters.dict()
                 })
                 return filters
+            
             except (json.JSONDecodeError, TypeError) as e:
                 logger.error({
                     "action": "filter_extraction_parse_error",
@@ -966,7 +979,7 @@ class BankingAIAgent:
                 template="""
                 Extract transfer details from the query:
                 - amount: number
-                - currency: "USD" or "PKR"
+                - currency: usd/USD = "USD" or pkr/PKR = "PKR" (even if user types currency in lower case always extract it in upper case)
                 - recipient: string
                 Return JSON: {{"amount": number, "currency": string, "recipient": string}}
                 
