@@ -248,31 +248,6 @@ class BankingAIAgent:
             """
         )
 
-        # Response formatting prompt
-        self.response_prompt = PromptTemplate(
-            input_variables=["user_message", "data", "intent"],
-            template="""
-            You are a banking AI assistant. Format the API response data into a natural language answer to the user's query. Be concise, professional, and avoid emojis or informal language.
-
-            User query: {user_message}
-            Intent: {intent}
-            API response data: {data}
-
-            Guidelines:
-            - For balance_inquiry, report current balances in USD and PKR.
-            - For transaction_history, list transactions with date, description, category, and non-zero amount (USD or PKR).
-            - For spending_analysis, summarize total spending in USD and PKR, specifying the description or category if applicable.
-            - For category_spending, list categories with amounts and percentages.
-            - For transfer_money, confirm the transfer details or report errors.
-            - For general, provide a helpful response explaining available queries.
-            - If the data indicates an error (e.g., {{"status": "fail"}}), return a user-friendly error message.
-            - For spending_analysis, if total_usd or total_pkr is zero, omit that currency from the response unless both are zero.
-            - When reporting amounts or balances, treat USD and PKR values as independent. Report both `amount_usd` and `amount_pkr` (or `balance_usd` and `balance_pkr`) when non-zero, and clarify that these are separate currency accounts, not conversions.
-
-            Format the response for the query and data provided.
-            """
-        )
-
         # Original query prompt (kept as fallback)
         self.query_prompt = PromptTemplate(
             input_variables=["user_message", "current_date"],
@@ -339,6 +314,30 @@ class BankingAIAgent:
             """
         )
 
+        # Response formatting prompt
+        self.response_prompt = PromptTemplate(
+            input_variables=["user_message", "data", "intent"],
+            template="""
+            You are a banking AI assistant. Format the API response data into a natural language answer to the user's query. Be concise, professional, and avoid emojis or informal language.
+
+            User query: {user_message}
+            Intent: {intent}
+            API response data: {data}
+
+            Guidelines:
+            - For balance_inquiry, report current balances in USD and PKR.
+            - For transaction_history, list transactions with date, description, category, and non-zero amount (USD or PKR).
+            - For spending_analysis, summarize total spending in USD and PKR, specifying the description or category if applicable.
+            - For category_spending, list categories with amounts and percentages.
+            - For transfer_money, confirm the transfer details or report errors.
+            - For general, provide a helpful response explaining available queries.
+            - If the data indicates an error (e.g., {{"status": "fail"}}), return a user-friendly error message.
+            - For spending_analysis, if total_usd or total_pkr is zero, omit that currency from the response unless both are zero.
+            - When reporting amounts or balances, treat USD and PKR values as independent. Report both `amount_usd` and `amount_pkr` (or `balance_usd` and `balance_pkr`) when non-zero, and clarify that these are separate currency accounts, not conversions.
+
+            Format the response for the query and data provided.
+            """
+        )
 
     def extract_filters_with_llm(self, user_message: str) -> FilterExtraction:
         """Use LLM to extract filters from user query."""
@@ -368,7 +367,6 @@ class BankingAIAgent:
                     "filters": filters.dict()
                 })
                 return filters
-            
             except (json.JSONDecodeError, TypeError) as e:
                 logger.error({
                     "action": "filter_extraction_parse_error",

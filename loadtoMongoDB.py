@@ -3,11 +3,11 @@ from pymongo import MongoClient
 
 # --- 1️⃣ Load Excel files using Pandas ---
 # 🔁 Convert account_number to string
-users_df = pd.read_excel("social_banking/users_data_updated.xlsx")
+users_df = pd.read_excel("social_banking/users_updated.xlsx")
 # Convert account_number to string to ensure consistency
 users_df["account_number"] = users_df["account_number"].astype(str)
 
-transactions_df = pd.read_excel("social_banking/transformed_transactions_1.xlsx")
+transactions_df = pd.read_excel("social_banking/final_transactions_database.xlsx")
 # Convert account_number to string to ensure consistency
 transactions_df["account_number"] = transactions_df["account_number"].astype(str)
 
