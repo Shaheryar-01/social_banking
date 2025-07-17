@@ -246,7 +246,7 @@ async def transfer_money(data: MoneyTransferRequest):
             "date": datetime.now(),
             "type": "debit",
             "description": f"Transfer to {data.to_recipient}",
-            "Category": "Transfer",
+            "category": "Transfer",
             "amount_usd": data.amount if data.currency == "USD" else 0,
             "amount_pkr": data.amount if data.currency == "PKR" else 0,
             "balance_usd": new_balance_usd,

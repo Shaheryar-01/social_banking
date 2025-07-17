@@ -2,7 +2,7 @@ import os
 import logging
 import json
 from datetime import datetime, timedelta
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 import httpx
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
@@ -79,6 +79,41 @@ def month_days(month: str, year: int) -> int:
     else:
         return 31
         
+_BRACE_RE = re.compile(r'[{[]')
+
+def _find_json_span(text: str) -> Tuple[int, int]:
+    """Return (start, end) indices of the first JSON value in text."""
+    m = _BRACE_RE.search(text)
+    if not m:
+        raise ValueError("No '{' or '[' found")
+    start = m.start()
+    stack = [text[start]]
+    for i in range(start + 1, len(text)):
+        ch = text[i]
+        if ch in '{[':
+            stack.append(ch)
+        elif ch in '}]':
+            if not stack:
+                break
+            open_ch = stack.pop()
+            # naive but fine for LLM output
+            if not stack:
+                return start, i + 1
+    raise ValueError("Unbalanced brackets")
+
+def _json_fix(raw: str) -> str:
+    """Best‑effort clean‑ups that keep strict JSON subset."""
+    fixed = raw.strip()
+
+    # ``` fences or other wrappers already removed by caller
+    fixed = re.sub(r"'", '"', fixed)                     # single → double quotes
+    fixed = re.sub(r',\s*([}\]])', r'\1', fixed)         # trailing comma
+    fixed = fixed.replace('NaN', 'null')                 # NaN → null
+    fixed = fixed.replace('Infinity', '1e308')           # Infinity → big number
+    fixed = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', fixed)  # stray backslashes
+    return fixed
+
+    
 class BankingAIAgent:
     def __init__(self):
         self.backend_url = "http://localhost:8000"
@@ -95,33 +130,8 @@ class BankingAIAgent:
             - account_number (string)
             - date (ISODate)
             - type (string: "debit" or "credit")
-            - description (string: Zong,
-                        Grocery Store,
-                        Careem,
-                        Foodpanda,
-                        Amazon,
-                        JazzCash,
-                        Utility Bill,
-                        McDonalds,
-                        Salary,
-                        Daraz,
-                        Netflix,
-                        ABC Corp,
-                        Recieved from X (replace X with name)
-                        )
-            - category (string: category
-                    Telecom,
-                    Groceries,
-                    Travel,
-                    Food,
-                    Shopping,
-                    Finance,
-                    Utilities,
-                    Income,
-                    Entertainment,
-                    Salary,
-                    Personal Transfer,
-                    )
+            - description (string: Zong, Grocery Store, Careem, Foodpanda, Amazon, JazzCash, Utility Bill, McDonalds, Salary, Daraz, Netflix, ABC Corp, Recieved from X (replace X with name))
+            - category (string: Telecom, Groceries, Travel, Food, Shopping, Finance, Utilities, Income,Entertainment, Salary, Transfer)
 
             - amount_usd (number)
             - amount_pkr (number)
@@ -201,7 +211,13 @@ class BankingAIAgent:
             }}
             
             User query: {user_message}
-            Return only the JSON object.
+            ### RESPONSE FORMAT – READ CAREFULLY
+            Return **exactly one** valid JSON value that fits the schema above.
+            • No Markdown, no ``` fences, no comments, no keys other than the schema.
+            • Do not pretty‑print; a single‑line minified object/array is required.
+            • If a value is unknown, use null.
+            Your entire reply must be parsable by `json.loads`.
+
             """
         )
         
@@ -271,6 +287,13 @@ class BankingAIAgent:
         ]
 
         Return only the JSON array pipeline.
+        ### RESPONSE FORMAT – READ CAREFULLY
+        Return **exactly one** valid JSON value that fits the schema above.
+        • No Markdown, no ``` fences, no comments, no keys other than the schema.
+        • Do not pretty‑print; a single‑line minified object/array is required.
+        • If a value is unknown, use null.
+        Your entire reply must be parsable by `json.loads`.
+
         """
     )
 
@@ -361,11 +384,44 @@ class BankingAIAgent:
             - The account maintains separate USD and PKR balances and transaction amounts. `amount_usd` and `amount_pkr` are independent, as are `balance_usd` and `balance_pkr`. Do not assume any conversion between these fields.
 
             User query: {user_message}
-            Return a valid JSON object.
+           ### RESPONSE FORMAT – READ CAREFULLY
+            Return **exactly one** valid JSON value that fits the schema above.
+            • No Markdown, no ``` fences, no comments, no keys other than the schema.
+            • Do not pretty‑print; a single‑line minified object/array is required.
+            • If a value is unknown, use null.
+            Your entire reply must be parsable by `json.loads`.
+
             """
         )
 
+    def extract_json_from_response(self, raw: str) -> Optional[Any]:
+        """
+        Extract the first JSON value from an LLM reply.
+        Returns the parsed Python object or None.
+        """
+        logger.info({"action": "extract_json_start", "raw_sample": raw[:200]})
 
+        try:
+            start, end = _find_json_span(raw)
+            candidate = raw[start:end]
+        except ValueError as e:
+            logger.error({"action": "extract_json_span_fail", "error": str(e)})
+            return None
+
+        # quick parse
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass  # fall through
+
+        # repair & retry
+        candidate = _json_fix(candidate)
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as e:
+            logger.error({"action": "extract_json_parse_fail", "error": str(e), "candidate": candidate[:200]})
+            return None
+    
     def extract_filters_with_llm(self, user_message: str) -> FilterExtraction:
         """Use LLM to extract filters from user query."""
         try:
@@ -387,8 +443,11 @@ class BankingAIAgent:
             })
             
             try:
-                filters_dict = json.loads(response.content)
-                filters = FilterExtraction(**filters_dict)
+                filters_obj = self.extract_json_from_response(response.content)
+                if filters_obj is None:
+                    raise ValueError("Could not parse filter JSON")
+                filters = FilterExtraction(**filters_obj)
+
                 logger.info({
                     "action": "filters_extracted",
                     "filters": filters.dict()
@@ -434,7 +493,7 @@ class BankingAIAgent:
                 "response_content": response.content[:1000]  # Log first 1000 chars for debugging
             })
             
-            cleaned_response = self._extract_json_from_response(response.content)
+            cleaned_response = self.extract_json_from_response(response.content)
         
             if not cleaned_response:
                 logger.error({
@@ -443,31 +502,31 @@ class BankingAIAgent:
                 })
                 return self._generate_fallback_pipeline(filters, intent, account_number)
             
-            try:
-                pipeline = json.loads(cleaned_response)
-                
-                # Validate pipeline structure
-                jsonschema.validate(pipeline, PIPELINE_SCHEMA)
-                logger.info({
-                    "action": "pipeline_generated",
-                    "pipeline": pipeline
-                })
-                return pipeline
-            except json.JSONDecodeError as e:
-                logger.error({
-                    "action": "pipeline_generation_parse_error",
-                    "error": str(e),
-                    "cleaned_response": cleaned_response[:1000]
-                })
-                return self._generate_fallback_pipeline(filters, intent, account_number)
-                
-            except jsonschema.ValidationError as e:
-                logger.error({
-                    "action": "pipeline_validation_error",
-                    "error": str(e),
-                    "cleaned_response": cleaned_response[:1000]
-                })
-                return self._generate_fallback_pipeline(filters, intent, account_number)
+            # Since response is already a list, no need to parse again
+            pipeline = cleaned_response
+            
+            # Validate pipeline structure
+            jsonschema.validate(pipeline, PIPELINE_SCHEMA)
+            logger.info({
+                "action": "pipeline_generated",
+                "pipeline": pipeline
+            })
+            return pipeline
+        except json.JSONDecodeError as e:
+            logger.error({
+                "action": "pipeline_generation_parse_error",
+                "error": str(e),
+                "cleaned_response": cleaned_response[:1000]
+            })
+            return self._generate_fallback_pipeline(filters, intent, account_number)
+            
+        except jsonschema.ValidationError as e:
+            logger.error({
+                "action": "pipeline_validation_error",
+                "error": str(e),
+                "cleaned_response": cleaned_response[:1000]
+            })
+            return self._generate_fallback_pipeline(filters, intent, account_number)
                     
         except Exception as e:
             logger.error({
@@ -475,101 +534,6 @@ class BankingAIAgent:
                 "error": str(e)
             })
             return self._generate_fallback_pipeline(filters, intent, account_number)
-
-    def _extract_json_from_response(self, response_content: str) -> str:
-        """Extract valid JSON from LLM response, handling common issues and edge cases."""
-        logger.info({
-            "action": "extract_json_from_response_start",
-            "raw_response": response_content[:500]  # Log first 500 chars for brevity
-        })
-
-        # Step 1: Clean the response
-        cleaned_response = re.sub(r'```(?:json)?\s*', '', response_content, flags=re.IGNORECASE)
-        cleaned_response = re.sub(r'```\s*', '', cleaned_response)
-
-        prefixes_to_remove = [
-            r"Based on the provided intent and filters, the generated MongoDB aggregation pipeline is:",
-            r"The MongoDB aggregation pipeline is:",
-            r"Here is the pipeline:",
-            r"Pipeline:",
-            r"The generated pipeline is:",
-            r"Here is the JSON pipeline:",
-            r"JSON Response:",
-            r"Output:"
-        ]
-        for prefix in prefixes_to_remove:
-            cleaned_response = re.sub(prefix, '', cleaned_response, flags=re.IGNORECASE)
-
-        cleaned_response = cleaned_response.strip()
-
-        # Step 2: Extract JSON array or object
-        json_pattern = r'(\[\s*{.*?}\s*\]|\{.*?\})'
-        json_match = re.search(json_pattern, cleaned_response, re.DOTALL)
-
-        if not json_match:
-            logger.error({
-                "action": "extract_json_from_response_failed",
-                "error": "No valid JSON array or object found",
-                "cleaned_response": cleaned_response[:500]
-            })
-            return ""
-
-        extracted_json = json_match.group(1).strip()
-
-        # Step 3: Fix common JSON issues
-        try:
-            # Replace malformed ISODate strings
-            extracted_json = re.sub(
-                r'ISODate\("([^"]*)"\)',
-                r'{"$date": "\1"}',
-                extracted_json
-            )
-
-            # Fix trailing commas
-            extracted_json = re.sub(r',\s*(\]|\})', r'\1', extracted_json)
-
-            # Fix single quotes to double quotes
-            extracted_json = extracted_json.replace("'", '"')
-
-            # Fix malformed regex fields (e.g., "category": "Telecom" -> "category": {"$regex": "Telecom", "$options": "i"})
-            extracted_json = re.sub(
-                r'"category":\s*"([^"]+)"',
-                r'"category": {"$regex": "\1", "$options": "i"}',
-                extracted_json
-            )
-
-            # Step 4: Validate JSON
-            parsed_json = json.loads(extracted_json)
-
-            if not isinstance(parsed_json, list):
-                logger.error({
-                    "action": "extract_json_from_response_invalid_type",
-                    "error": "Extracted JSON is not an array",
-                    "extracted_json": extracted_json[:500]
-                })
-                return ""
-
-            logger.info({
-                "action": "extract_json_from_response_success",
-                "extracted_json": extracted_json[:500]
-            })
-            return extracted_json
-
-        except json.JSONDecodeError as e:
-            logger.error({
-                "action": "extract_json_from_response_parse_error",
-                "error": str(e),
-                "extracted_json": extracted_json[:500]
-            })
-            return ""
-
-        except Exception as e:
-            logger.error({
-                "action": "extract_json_from_response_unexpected_error",
-                "error": str(e),
-                "extracted_json": extracted_json[:500]
-            })
-            return ""
     
     def _generate_fallback_pipeline(self, filters: FilterExtraction, intent: str, account_number: str) -> List[Dict[str, Any]]:
         """Generate a basic pipeline when LLM fails."""
@@ -918,12 +882,11 @@ class BankingAIAgent:
                 "response_content": response.content
             })
 
-            try:
-                result = json.loads(response.content)
-            except json.JSONDecodeError as e:
+            result = self.extract_json_from_response(response.content)
+            if result is None:
                 logger.error({
                     "action": "llm_response_parse",
-                    "error": str(e),
+                    "error": "Could not extract JSON from response",
                     "raw_response": response.content
                 })
                 return QueryResult(intent="general", pipeline=[])
@@ -1076,12 +1039,11 @@ class BankingAIAgent:
                 "response_content": response.content
             })
 
-            try:
-                transfer_details = json.loads(response.content)
-            except json.JSONDecodeError as e:
+            transfer_details = self.extract_json_from_response(response.content)
+            if transfer_details is None:
                 logger.error({
                     "action": "transfer_details_parse",
-                    "error": str(e),
+                    "error": "Could not extract JSON from response",
                     "raw_response": response.content
                 })
                 return "Invalid transfer details. Please try again."
