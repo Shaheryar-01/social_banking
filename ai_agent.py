@@ -26,7 +26,7 @@ load_dotenv()
 llm = ChatOpenAI(
     model="gpt-4o",
     api_key=os.getenv("OPENAI_API_KEY"),
-    temperature=0.2
+    temperature=0.1
 )
 
 # MongoDB pipeline schema for validation
@@ -222,6 +222,7 @@ class BankingAIAgent:
         )
         
         # Prompt for generating MongoDB pipeline from extracted filters
+        # Enhanced prompt for generating MongoDB pipeline from extracted filters
         self.pipeline_generation_prompt = PromptTemplate(
         input_variables=["filters", "intent", "account_number"],
         template="""
@@ -240,10 +241,18 @@ class BankingAIAgent:
         4. $limit - for limiting results
         5. $project - for selecting specific fields
 
-        Rules:
+        CRITICAL DATE HANDLING RULES:
+        - If filters contain 'date_range' with start and end dates, use EXACT date range: {{"$gte": {{"$date": "START_DATET00:00:00Z"}}, "$lte": {{"$date": "END_DATET23:59:59Z"}}}}
+        - If filters contain BOTH 'month' and 'year' (both not null), use full month range
+        - If filters contain ONLY 'year' without month or date_range, DO NOT add any date filter
+        - If filters contain null/empty month AND null/empty date_range, DO NOT add any date filter regardless of year
+        - ALWAYS prioritize date_range over month/year when both are present
+        - For single-day queries, start and end dates will be the same - use both start and end times
+
+        General Rules:
         - Always include account_number in $match
         - For description and category matching, use $regex with case-insensitive option (e.g., {{"$regex": "value", "$options": "i"}})
-        - For date filtering, convert month/year to ISODate range in the format {{"$date": "YYYY-MM-DDTHH:mm:ssZ"}}
+        - For date filtering, convert to ISODate range in the format {{"$date": "YYYY-MM-DDTHH:mm:ssZ"}}
         - For spending analysis or category_spending, group by null and sum amounts
         - For transaction history, sort by date descending and _id descending
         - Ensure all ISODate values are valid and properly formatted (e.g., {{"$date": "2025-06-01T00:00:00Z"}})
@@ -251,7 +260,18 @@ class BankingAIAgent:
         - For category_spending intent with a category filter, always use {{"$regex": "<category>", "$options": "i"}} for the category field to ensure case-insensitive matching
         - Treat `amount_usd` and `amount_pkr` as independent fields representing transactions in their respective currencies
 
-        Month to date range mapping (assuming year 2025):
+        DATE PROCESSING LOGIC:
+        1. CHECK for date_range in filters first
+        2. If date_range exists and is not null:
+           - Use start date + "T00:00:00Z" for $gte
+           - Use end date + "T23:59:59Z" for $lte
+        3. If NO date_range but BOTH month AND year exist and are not null:
+           - Use month to date range mapping below
+        4. If month is null OR date_range is null:
+           - DO NOT add any date filter to the pipeline
+        5. Year alone (without month or date_range) should NOT create a date filter
+
+        Month to date range mapping (for when date_range is NOT provided):
         - january: {{"$date": "2025-01-01T00:00:00Z"}} to {{"$date": "2025-01-31T23:59:59Z"}}
         - february: {{"$date": "2025-02-01T00:00:00Z"}} to {{"$date": "2025-02-28T23:59:59Z"}}
         - march: {{"$date": "2025-03-01T00:00:00Z"}} to {{"$date": "2025-03-31T23:59:59Z"}}
@@ -267,9 +287,33 @@ class BankingAIAgent:
 
         Examples:
 
+        Intent: category_spending, Filters: {{"category": "Shopping", "year": 2025, "transaction_type": "debit", "month": null, "date_range": null}}
+        Pipeline: [
+            {{"$match": {{"account_number": "{account_number}", "type": "debit", "category": {{"$regex": "Shopping", "$options": "i"}}}}}},
+            {{"$group": {{"_id": null, "total_usd": {{"$sum": "$amount_usd"}}, "total_pkr": {{"$sum": "$amount_pkr"}}}}}}
+        ]
+
+        Intent: spending_analysis, Filters: {{"description": "netflix", "year": 2025, "transaction_type": "debit", "month": null, "date_range": null}}
+        Pipeline: [
+            {{"$match": {{"account_number": "{account_number}", "type": "debit", "description": {{"$regex": "netflix", "$options": "i"}}}}}},
+            {{"$group": {{"_id": null, "total_usd": {{"$sum": "$amount_usd"}}, "total_pkr": {{"$sum": "$amount_pkr"}}}}}}
+        ]
+
         Intent: spending_analysis, Filters: {{"description": "netflix", "month": "june", "year": 2025, "transaction_type": "debit"}}
         Pipeline: [
             {{"$match": {{"account_number": "{account_number}", "type": "debit", "description": {{"$regex": "netflix", "$options": "i"}}, "date": {{"$gte": {{"$date": "2025-06-01T00:00:00Z"}}, "$lte": {{"$date": "2025-06-30T23:59:59Z"}}}}}}}},
+            {{"$group": {{"_id": null, "total_usd": {{"$sum": "$amount_usd"}}, "total_pkr": {{"$sum": "$amount_pkr"}}}}}}
+        ]
+
+        Intent: category_spending, Filters: {{"date_range": {{"start": "2025-06-01", "end": "2025-06-01"}}, "transaction_type": "debit"}}
+        Pipeline: [
+            {{"$match": {{"account_number": "{account_number}", "type": "debit", "date": {{"$gte": {{"$date": "2025-06-01T00:00:00Z"}}, "$lte": {{"$date": "2025-06-01T23:59:59Z"}}}}}}}},
+            {{"$group": {{"_id": null, "total_usd": {{"$sum": "$amount_usd"}}, "total_pkr": {{"$sum": "$amount_pkr"}}}}}}
+        ]
+
+        Intent: category_spending, Filters: {{"date_range": {{"start": "2025-06-01", "end": "2025-06-05"}}, "transaction_type": "debit"}}
+        Pipeline: [
+            {{"$match": {{"account_number": "{account_number}", "type": "debit", "date": {{"$gte": {{"$date": "2025-06-01T00:00:00Z"}}, "$lte": {{"$date": "2025-06-05T23:59:59Z"}}}}}}}},
             {{"$group": {{"_id": null, "total_usd": {{"$sum": "$amount_usd"}}, "total_pkr": {{"$sum": "$amount_pkr"}}}}}}
         ]
 
@@ -286,6 +330,16 @@ class BankingAIAgent:
             {{"$group": {{"_id": null, "total_usd": {{"$sum": "$amount_usd"}}, "total_pkr": {{"$sum": "$amount_pkr"}}}}}}
         ]
 
+        STEP-BY-STEP PROCESSING:
+        1. Check if 'date_range' exists in filters and is not null
+        2. If yes, create date filter using start/end dates with proper time components
+        3. If no, check if BOTH 'month' and 'year' exist and are not null
+        4. If both month and year exist, use monthly range mapping
+        5. If month is null or date_range is null, DO NOT add date filter
+        6. Apply transaction_type filter if present
+        7. Apply description/category regex filters if present
+        8. Add appropriate aggregation stages based on intent
+
         Return only the JSON array pipeline.
         ### RESPONSE FORMAT – READ CAREFULLY
         Return **exactly one** valid JSON value that fits the schema above.
@@ -296,12 +350,11 @@ class BankingAIAgent:
 
         """
     )
-
         # Response formatting prompt
         self.response_prompt = PromptTemplate(
             input_variables=["user_message", "data", "intent"],
             template="""
-            You are a banking AI assistant. Format the API response data into a natural language answer to the user's query. Be concise, professional, and avoid emojis or informal language.
+            consider yourself as  a consultant for a organization creating banking ai agents. Format the API response data into a natural language answer to the user's query. Be concise, professional, or informal language.
 
             User query: {user_message}
             Intent: {intent}
@@ -318,6 +371,7 @@ class BankingAIAgent:
             - For spending_analysis, if total_usd or total_pkr is zero, omit that currency from the response unless both are zero.
             - When reporting amounts or balances, treat USD and PKR values as independent. Report both `amount_usd` and `amount_pkr` (or `balance_usd` and `balance_pkr`) when non-zero, and clarify that these are separate currency accounts, not conversions.
 
+            Convert it into a finished and professional message.
             Format the response for the query and data provided.
             """
         )
