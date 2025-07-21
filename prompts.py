@@ -495,3 +495,69 @@ Examples:
 - "breakdown my spending by category last month" → category_spending
 - "transfer 500 USD to John" → transfer_money
 """
+
+
+
+# Add these to your prompts.py file
+
+contextual_detection_prompt = """
+Analyze if the current user query is referencing or building upon previous conversation context.
+
+Current Query: "{user_message}"
+
+Previous Context:
+{context_summary}
+
+A query is contextual if it:
+1. References previous results using demonstrative pronouns or phrases
+2. Uses filtering language that implies previous data exists
+3. Asks for breakdowns or analysis of unspecified data
+4. Uses relative terms without absolute context
+5. Contains incomplete information that requires previous context
+
+CONTEXTUAL indicators:
+- Demonstrative references: "from this", "from that", "these", "those", "them", "it"
+- Filtering phrases: "show me the...", "which ones", "filter by", "break down"
+- Relative terms: "the highest", "the recent ones", "the largest"
+- Incomplete requests: "by category" (without specifying what to categorize)
+
+NON-CONTEXTUAL indicators:
+- Complete time references: "in June", "last month", "from January to March"
+- Specific amounts: "over $100", "between $50 and $200"
+- Complete entity references: "my balance", "grocery transactions"
+- Standalone requests: "transfer money", "show my account"
+
+Return JSON:
+{{
+    "is_contextual": true/false,
+    "confidence": 0.0-1.0,
+    "reasoning": "Brief explanation"
+}}
+"""
+
+contextual_resolution_prompt = """
+Resolve this contextual banking query by combining current request with previous context.
+
+Current Query: "{user_message}"
+
+Previous Context:
+- Query: "{previous_query}"
+- Intent: "{previous_intent}"  
+- Filters: {previous_filters}
+- Response: "{previous_response_summary}"
+
+Create a complete, standalone query that preserves previous context and adds new requirements.
+
+Rules:
+1. Maintain all relevant previous filters (dates, categories, amounts)
+2. Add new filtering or analysis from current query
+3. Preserve the core intent unless explicitly changed
+4. Make query completely self-contained
+
+Examples:
+Previous: "June spending" + Current: "on groceries" → "June spending on groceries"
+Previous: "last week transactions" + Current: "over $100" → "last week transactions over $100"
+Previous: "May expenses" + Current: "by category" → "May expenses broken down by category"
+
+Return only the resolved query string.
+"""

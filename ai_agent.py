@@ -348,23 +348,17 @@ class BankingAIAgent:
         })
     
     def analyze_contextual_query(self, user_message: str, account_number: str) -> ContextualQuery:
-        """Analyze if query needs context and what information is missing."""
+        """Analyze if query needs context and what information is missing using LLM."""
         context = self.get_user_context(account_number)
-        
-        # Context reference phrases
-        context_phrases = [
-            "from this", "from that", "out of this", "out of that", "from the above",
-            "from these", "from those", "of this", "of that", "in this", "in that"
-        ]
-        
-        # Check if user is referencing previous context
-        has_reference = any(phrase in user_message.lower() for phrase in context_phrases)
-        
-        # If no context reference, check if query is complete on its own
-        if not has_reference:
+    
+        # First, use LLM to detect if this is a contextual query
+        contextual_detection_result = self._detect_contextual_reference_with_llm(user_message, context)
+    
+        # If no contextual reference detected, analyze as standalone query
+        if not contextual_detection_result["is_contextual"]:
             return self._analyze_standalone_query(user_message)
-        
-        # If has context reference, check if previous context exists
+    
+        # If contextual reference detected but no previous context exists
         if not context.last_query or not context.last_filters:
             return ContextualQuery(
                 needs_context=True,
@@ -372,7 +366,7 @@ class BankingAIAgent:
                 is_complete=False,
                 clarification_needed="I don't have any previous query to reference. Could you please provide the complete information for your request?"
             )
-        
+    
         # Check if context is recent (within last 10 minutes)
         if context.timestamp and (datetime.now() - context.timestamp).seconds > 600:
             return ContextualQuery(
@@ -381,10 +375,10 @@ class BankingAIAgent:
                 is_complete=False,
                 clarification_needed="The previous context is too old. Could you please provide the complete information for your request?"
             )
-        
+    
         # Try to resolve the query with context
         try:
-            resolved_query = self._resolve_contextual_query(user_message, context)
+            resolved_query = self._resolve_contextual_query_with_llm(user_message, context)
             return ContextualQuery(
                 needs_context=True,
                 has_reference=True,
@@ -399,7 +393,167 @@ class BankingAIAgent:
                 is_complete=False,
                 clarification_needed="I couldn't understand the context. Could you please provide the complete information for your request?"
             )
+  
+    def _detect_contextual_reference_with_llm(self, user_message: str, context: ConversationContext) -> Dict[str, Any]:
+        """Use LLM to detect if user query references previous context."""
     
+        # Prepare context summary for LLM
+        context_summary = "No previous context available"
+        if context.last_query and context.last_response:
+            context_summary = f"""
+            Previous Query: "{context.last_query}"
+            Previous Response Summary: "{context.last_response[:200]}..."
+            Previous Intent: "{context.last_intent}"
+            """
+    
+        contextual_detection_prompt = f"""
+        Analyze if the current user query is referencing or building upon previous conversation context.
+
+        Current Query: "{user_message}"
+    
+        Previous Context:
+        {context_summary}
+
+        A query is contextual if it:
+        1. References previous results (e.g., "from this", "from that data", "those transactions")
+        2. Uses pronouns that refer to previous content (e.g., "them", "these", "it")
+        3. Asks for filtering/drilling down into previous results (e.g., "show me the grocery ones", "which were over $100")
+        4. Uses relative terms that depend on previous context (e.g., "the highest", "the recent ones")
+        5. Asks follow-up questions that only make sense with previous context
+
+        Examples of CONTEXTUAL queries:
+        - "from this how much on groceries" (after showing spending data)
+        - "show me the grocery ones" (after showing transactions)
+        - "which of these are over $100" (after showing a list)
+        - "the highest transaction" (after showing transactions)
+        - "break it down by category" (after showing total spending)
+        - "filter them by last week" (after showing results)
+
+        Examples of NON-CONTEXTUAL queries:
+        - "show me my balance" (complete standalone query)
+        - "how much did I spend on groceries in June" (complete with all details)
+        - "transfer 500 USD to John" (complete transfer request)
+        - "show me transactions from last week" (complete with timeframe)
+
+        Return JSON:
+        {{
+            "is_contextual": true/false,
+            "confidence": 0.0-1.0,
+            "reasoning": "Brief explanation of why this is or isn't contextual"
+        }}
+        """
+    
+        try:
+            response = llm.invoke([SystemMessage(content=contextual_detection_prompt)])
+            result = self.extract_json_from_response(response.content)
+        
+            if result and isinstance(result, dict):
+                logger.info({
+                    "action": "contextual_detection_llm",
+                    "user_message": user_message,
+                    "result": result
+                })
+                return result
+            else:
+                # Fallback to safe assumption
+                return {
+                    "is_contextual": False,
+                    "confidence": 0.5,
+                    "reasoning": "Could not parse LLM response"
+                }
+            
+        except Exception as e:
+            logger.error(f"Error in contextual detection with LLM: {e}")
+            # Fallback to trigger word detection
+            return self._fallback_trigger_word_detection(user_message)
+
+
+
+    def _fallback_trigger_word_detection(self, user_message: str) -> Dict[str, Any]:
+        """Fallback method using trigger words if LLM fails."""
+        context_phrases = [
+            "from this", "from that", "out of this", "out of that", "from the above",
+            "from these", "from those", "of this", "of that", "in this", "in that",
+            "them", "these", "those", "it", "they", "break it down", "filter them",
+            "show me the", "which ones", "the highest", "the lowest", "the recent ones"
+        ]
+    
+        has_reference = any(phrase in user_message.lower() for phrase in context_phrases)
+    
+        return {
+            "is_contextual": has_reference,
+            "confidence": 0.7 if has_reference else 0.8,
+            "reasoning": f"Trigger word detection: {'found' if has_reference else 'not found'} contextual phrases"
+        }
+
+    def _resolve_contextual_query_with_llm(self, user_message: str, context: ConversationContext) -> str:
+        """Enhanced contextual query resolution using LLM."""
+    
+        resolution_prompt = f"""
+        You are helping resolve a contextual banking query. The user is referencing previous conversation context.
+    
+        Current User Query: "{user_message}"
+    
+        Previous Context:
+        - Previous Query: "{context.last_query}"
+        - Previous Intent: "{context.last_intent}"
+        - Previous Filters Applied: {json.dumps(context.last_filters.dict() if context.last_filters else {})}
+        - Previous Response Summary: "{(context.last_response or '')[:300]}..."
+    
+        Your task is to combine the current query with the previous context to create a complete, standalone query.
+    
+        Guidelines:
+        1. Preserve all relevant filters from the previous context
+        2. Add new filtering/analysis requested in current query
+        3. Make the query completely self-contained
+        4. Maintain the original intent unless explicitly changed
+    
+        Examples:
+    
+        Previous: "how much did I spend in June"
+        Current: "from this how much on groceries"
+        Resolved: "how much did I spend on groceries in June"
+    
+        Previous: "show me my transactions from last week"
+        Current: "which ones are over $100"
+        Resolved: "show me my transactions from last week that are over $100"
+    
+        Previous: "my spending analysis for May 2024"
+        Current: "break it down by category"
+        Resolved: "show me my spending breakdown by category for May 2024"
+    
+        Previous: "show me restaurant transactions in March"
+        Current: "the highest one"
+        Resolved: "show me the highest restaurant transaction in March"
+    
+        Return ONLY the resolved query as a plain string, no JSON or formatting.
+        """
+    
+        try:
+            response = llm.invoke([SystemMessage(content=resolution_prompt)])
+            resolved_query = response.content.strip()
+        
+            # Remove any quotes or extra formatting
+            resolved_query = resolved_query.strip('"\'')
+        
+            logger.info({
+                "action": "resolve_contextual_query_llm",
+                "original_query": user_message,
+                "resolved_query": resolved_query,
+                "context_query": context.last_query
+            })
+        
+            return resolved_query
+        
+        except Exception as e:
+            logger.error(f"Error resolving contextual query with LLM: {e}")
+            raise e
+
+
+
+
+
+
     def _analyze_standalone_query(self, user_message: str) -> ContextualQuery:
         """Simplified analysis - only check transfers for completeness."""
     
